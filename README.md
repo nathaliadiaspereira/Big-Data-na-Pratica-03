@@ -1,8 +1,8 @@
-## Este é o Big Data na Prática 3 - Mineração de Regra de Associação. Esse exemplo foi apresentado no curso Big Data Analytics com R e Microsoft Azure da Data Science Academy.
+#### Este é o Big Data na Prática 3 - Mineração de Regra de Associação. Esse exemplo foi apresentado no curso Big Data Analytics com R e Microsoft Azure da Data Science Academy.
 
-## Usarei o dataset oferecido pelo Kaggle: https://www.kaggle.com/hugomathien/soccer
+#### Usarei o dataset oferecido pelo Kaggle: https://www.kaggle.com/hugomathien/soccer
 
-## Definição do problema de Negócio
+#### Definição do problema de Negócio
 
 #### Quais clubes mais realizam transações de compra e venda de jogadores, entre si?
 
