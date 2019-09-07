@@ -1,0 +1,555 @@
+---
+title: "Big-Data-na-Pratica-03"
+output: html_document
+---
+
+#### Este é o Big Data na Prática 3 - Mineração de Regra de Associação. Esse exemplo foi apresentado no curso Big Data Analytics com R e Microsoft Azure da Data Science Academy.
+
+#### Usarei o dataset oferecido pelo Kaggle: https://www.kaggle.com/hugomathien/soccer
+
+#### Definição do problema de Negócio
+
+Quais clubes mais realizam transações de compra e venda de jogadores, entre si?
+
+O dataset contêm cerca de 25.000 partidas de onze ligas de futebol europeus a partir da temporada 2008/2009 até a temporada 2015/2016. Portanto, não temos clientes, mas jogadores de futebol, e não temos produtos, mas clubes de futebol. 
+
+```{r}
+setwd("/app/git-corse/Big-Data-Analytics-R-Microsoft-Azure-Machine-Learning")
+getwd()
+```
+
+#### Instalação dos Pacotes
+
+```{r}
+#install.packages("RSQLite")
+#install.packages("arules")
+#install.packages("arulesSequences")
+#install.packages("visNetwork")
+#install.packages("igraph")
+#install.packages("DT")
+#install.packages("dplyr")
+#install.packages("stringr")
+#install.packages("tidyr")
+#install.packages("readr")
+
+library("RSQLite")
+library("arules")
+library("arulesSequences")
+library("visNetwork")
+library("igraph")
+library("DT")
+library("dplyr")
+library("stringr")
+library("tidyr")
+library("readr")
+```
+
+#### Importando dataset
+
+O dataset esta em formato sqlite.
+
+```{r}
+# conecta com base
+con <- dbConnect(drv=RSQLite::SQLite(), dbname="Data/database.sqlite")
+
+# lista todas as tabelas
+tables <- dbListTables(con)
+
+tables
+```
+
+```{r}
+# Criando as tabelas
+country       = dbReadTable(con, "Country")
+league        = dbReadTable(con, "League")
+matches       = dbReadTable(con, "Match")
+players       = dbReadTable(con, "Player")
+players_stats = dbReadTable(con, "Player_Attributes")
+teams         = dbReadTable(con, "Team")
+team_attributes = dbReadTable(con, "Team_Attributes")
+```
+
+#### Analisando as tabelas
+
+Para entender melhor os dados vou explorar o conteudo de cada tabela, entendendo seus relacionamentos.
+
+#### country
+
+Nome do pais das ligas
+
+```{r}
+head(country)
+```
+
+A principio não irei precisar dessa tabela.
+
+#### league
+
+Código e nome da liga. Podemos observar o relacionamento com  a tabela Country pelo campo country_id.
+
+```{r}
+head(league)
+```
+
+A principio não irei precisar dessa tabela
+
+#### matches
+
+Temos informações das partidas. 
+
+```{r}
+head(matches)
+```
+
+Nessa tabela tenho as datas e a identificação da liga e os times, porém possui campos inrrelevantes para análise. 
+
+#### players
+
+Contém informações dos jogadores.
+
+```{r}
+head(players)
+```
+
+#### players_stats
+
+Pontuação dos jogadores. Para a análise esses dados não serão importantes.
+
+```{r}
+head(players_stats)
+```
+
+#### teams
+
+Nessa tabela temos os times. Com o campo team_api_id podemos ligar as outras tabelas.
+
+```{r}
+head(teams)
+```
+
+#### team_attributes
+
+Temos os dados dos times. A princípio não precisarei dessas informações.
+
+```{r}
+head(team_attributes)
+```
+
+#### Agrupando as equipes por país
+
+```{r}
+time_pais = matches %>% 
+  group_by(home_team_api_id, country_id) %>% 
+  summarise(n=n()) %>% 
+  left_join(league) %>%
+  left_join(teams, by=c("home_team_api_id" = "team_api_id"))
+```
+
+#### Encontrando as relações
+
+Agora que indentifiquei que com o campo team_api_id posso ligar aos times as ligas e aos jogadores, vou verificar a melhor maneira de realizar essas junções.
+
+Não encontrei ligação por team_api_id em players.
+
+```{r}
+head(select(players, id, contains("team_api_id")), n=2)
+```
+
+Não encontrei ligação por team_api_id em players_stats.
+
+```{r}
+head(select(players_stats, id, contains("team_api_id")), n=2)
+```
+
+Encontrei os campos home_team_api_id e away_team_api_id.
+
+```{r}
+head(select(matches, id, contains("team_api_id")), n=2)
+```
+
+Vamos usar o jogador Cristiano Ronaldo como exemplo pois em 2009 ele jogava pelo Manchester United e após essa data passou para o Real Madrid.
+
+```{r}
+head(players[players$player_name == 'Cristiano Ronaldo',], n=2)
+```
+
+Vou descobrir o ID dos times 'Manchester United' e 'Real Madrid'.
+
+```{r}
+teams[teams$team_long_name %in% (c('Manchester United', 'Real Madrid')),]
+```
+
+Não identifiquei o Real.
+
+```{r}
+teams %>% filter(str_detect(team_long_name, "Real"))
+```
+
+Agora já consigo validar os dados.
+
+```{r}
+teams[teams$team_long_name %in% (c('Manchester United', 'Real Madrid CF')),]
+```
+
+Na tabela de matches temos o campo home_team_api_id, away_team_api_id.
+
+#### Joins
+
+Agora que já sei quais campos usar e tenho uma jogador, vou começar.
+
+#### Vamos unir os times com as ligas
+
+```{r}
+time_liga <-
+matches %>% 
+left_join(
+  teams, 
+  by=c("home_team_api_id"="team_api_id")
+) %>%  
+left_join(
+  league, 
+  by=c("league_id"="id")
+) %>% 
+select(home_team_api_id, team_long_name, season, date, name)
+```
+
+#### Vamos unir os jogadores com os times
+
+Na tabela de matches os jogadores estão divididos de home_player_X1 à home_player_X11. Conseguimos observar valores nulos, mas só vamos tratá-los após termos nossa base organizada.
+
+```{r}
+matches %>% select(home_team_api_id, season, date, home_player_1:home_player_11)
+```
+
+Conseguimos inserir os jogadores em uma única coluna.
+
+```{r}
+tmp <- matches %>% select(home_team_api_id, season, date, home_player_1:home_player_11) %>%
+  gather(
+    player, 
+    player_api_id, 
+    -c(season, date, home_team_api_id)
+  ) %>% select(home_team_api_id, season, date, player_api_id)
+
+head(tmp)
+```
+
+Vou unir com o nome dos jogadores.
+
+```{r}
+tmp <- tmp %>% left_join(
+  players, 
+  by=c("player_api_id"="player_api_id")
+) %>% select(home_team_api_id, season, date, player_name, player_api_id)
+```
+
+Agora unindo jogadores com os times.
+
+```{r}
+time_liga_jogadores <- time_liga %>% 
+  left_join(
+  tmp, 
+  by=c("home_team_api_id"="home_team_api_id", "season" = "season", "date" = "date"))
+```
+
+Usando Cristiano Ronaldo como teste podemos verificar que os dados estão corretos. O campo date podemos eliminar pois a season já nos indica a mudança de time nas temporadas.
+
+```{r}
+time_liga_jogadores %>% filter(player_api_id == 30893)  %>%  select(team_long_name, season, player_name)  %>% distinct()
+```
+
+#### Limpeza
+
+Vamos tratar os nomes tirando espaços, acentos e com letra minúsculas.
+
+Vamos eliminar as colunas que não irei usar.
+
+```{r}
+time_liga_jogadores$name = NULL
+time_liga_jogadores$date = NULL
+```
+
+Renomeando as colunas para facilitar a compreenção:
+
+```{r}
+time_liga_jogadores <- time_liga_jogadores %>% 
+  rename(
+     "id_time" = home_team_api_id,
+     "nome_time" = team_long_name,
+     "id_jogador" = player_api_id,
+     "nome_jogador" = player_name,
+     "temporada"    = season
+    )
+```
+
+Transformando em minúscula:
+
+```{r}
+time_liga_jogadores$nome_time = tolower(time_liga_jogadores$nome_time)
+time_liga_jogadores$nome_jogador = tolower(time_liga_jogadores$nome_jogador)
+```
+
+Removendo acentos:
+
+```{r}
+time_liga_jogadores$nome_time = iconv(time_liga_jogadores$nome_time, to='ASCII//TRANSLIT')
+time_liga_jogadores$nome_jogador = iconv(time_liga_jogadores$nome_jogador, to='ASCII//TRANSLIT')
+```
+
+Substituindo espaços por "_":
+
+```{r}
+time_liga_jogadores$nome_time = str_replace_all(time_liga_jogadores$nome_time, "\\s", "_")
+time_liga_jogadores$nome_time = str_replace_all(time_liga_jogadores$nome_time, "\\.", "_")
+time_liga_jogadores$nome_time = str_replace_all(time_liga_jogadores$nome_time, "-", "_")
+
+time_liga_jogadores$nome_jogador = str_replace_all(time_liga_jogadores$nome_jogador, "\\s", "_")
+time_liga_jogadores$nome_jogador = str_replace_all(time_liga_jogadores$nome_jogador, "\\.", "_")
+time_liga_jogadores$nome_jogador = str_replace_all(time_liga_jogadores$nome_jogador, "-", "_")
+```
+
+Verificando valores vazios:
+
+```{r}
+tot_rows = nrow(time_liga_jogadores)
+
+sapply(time_liga_jogadores, function(x) sum(is.na(x)/tot_rows))
+```
+
+Vou eliminar as linhas:
+
+```{r}
+time_liga_jogadores <- time_liga_jogadores[rowSums(is.na(time_liga_jogadores)) == 0,]
+```
+
+Verificando valores vazios novamente:
+
+```{r}
+tot_rows = nrow(time_liga_jogadores)
+
+sapply(time_liga_jogadores, function(x) sum(is.na(x)/tot_rows))
+```
+
+Vamos agrupar os dados para eliminar possíveis duplicações e ordena-los:
+
+```{r}
+time_liga_jogadores_disitnct <- time_liga_jogadores %>% select(id_jogador, nome_jogador, id_time, nome_time, temporada) %>% 
+  distinct() %>% 
+  arrange(
+    id_jogador, 
+    temporada
+  )
+```
+
+O que queremos saber é para quais times os jogadores foram transferidos então vamos manter apenas o início e o fim do jogador no time:
+
+```{r}
+time_liga_jogadores_disitnct
+```
+
+```{r}
+time_jogadores_limpo <- 
+time_liga_jogadores_disitnct %>% 
+
+  filter(
+    !is.na(id_jogador), !is.na(id_time)
+  ) %>%
+  
+  # Separando as temporadas
+  separate(temporada, c("inicio","fim"), "/", extra = "merge") %>% 
+  
+  # agrupando para calcular data max e min em cada time
+  group_by(id_jogador, nome_jogador, id_time, nome_time) %>% 
+  
+  # criando as colunas de menor e maior data em cada time
+  mutate(mini = min(inicio), maxi = max(fim), )  %>% 
+  
+  # unindo as datas em uma nova coluna
+  unite(temporada_total, c("mini", "maxi"), sep = "/") %>% 
+  
+  # selecionando as colunas
+  select(id_jogador, nome_jogador, id_time, nome_time, temporada_total) %>% 
+  
+  # eliminando as repetições das outras temporadas
+  distinct()
+```
+
+Verificando com o Cristiano Ronaldo:
+
+```{r}
+time_jogadores_limpo  %>% filter(id_jogador == 30893)
+```
+
+#### Algorítmo
+
+#### Mineração de sequências com algoritmo cSPade do pacote arulesSequences
+
+Criando uma sequência de transferência por jogador:
+
+```{r}
+time_jogadores_limpo$seqnr = ave(time_jogadores_limpo$id_jogador, time_jogadores_limpo$id_jogador, FUN = seq_along)
+time_jogadores_limpo$size = 1
+```
+
+Verificando com o Cristiano Ronaldo:
+
+```{r}
+time_jogadores_limpo %>% filter(id_jogador == 30893)
+```
+
+```{r}
+ head(time_jogadores_limpo)
+```
+
+Grava o conjunto de dados em um arquivo .txt para facilitar a manipulação:
+
+```{r}
+write_delim( 
+  time_jogadores_limpo %>% group_by(id_jogador, seqnr, size, nome_time) %>% 
+    select(id_jogador, seqnr, size, nome_time),
+  delim ="\t", path = "Data/player_transactions.txt", col_names = FALSE
+)
+```
+
+Importando os dados em formato de transação:
+
+```{r}
+jogadores <- read_baskets("Data/player_transactions.txt", sep = "[ \t]+",info =  c("sequenceID","eventID","size"))
+```
+
+Verificando objeto:
+
+```{r}
+summary(jogadores)
+```
+
+#### Executando a mineração de sequência
+
+Devido ao processamento irei iniciar com comprimento de duas sequências, como não tive problemas para execução testei até 20 sequências.
+
+```{r}
+jogadores_clubes <- cspade(
+  jogadores, 
+  parameter = list(support = 0.00010, maxlen=20), 
+  control   = list(verbose = TRUE)
+)
+```
+
+
+```{r}
+summary(jogadores_clubes)
+```
+
+#### Data Wrangling 
+
+Irei utilizar esse método para colocar os resultados do cspade em um organizado conjunto de dados que é adequado para a visNetwork. A visNetwork precisa de dois conjuntos de dados:
+
+1 - Um conjunto de dados com as arestas "de --> para"; 
+2 - Um conjunto de dados com os nós exclusivos;
+
+```{r}
+seqResult = as(jogadores_clubes, "data.frame")
+seqResult = seqResult %>% 
+  mutate(
+    sequence = as.character(sequence)
+  )
+```
+
+```{r}
+seqResult = bind_cols(
+  seqResult,
+  as.data.frame(
+    str_split_fixed(seqResult$sequence, pattern =",", 2), 
+    stringsAsFactors = FALSE)
+)
+```
+
+Incluindo as direções:
+
+```{r}
+seqResult$from = str_extract_all(seqResult$V1,"\\w+", simplify = TRUE)[,1] 
+seqResult$to   = str_extract_all(seqResult$V2,"\\w+",simplify = TRUE)[,1]
+```
+
+```{r}
+seqResult$width = exp(3000*seqResult$support)
+seqResult = seqResult %>% filter(V2 !="")
+seqResult$title = paste(seqResult$sequence, "<br>", round(100*seqResult$support,2), "%")
+
+seqResult$support_perc = paste(sprintf("%.4f", 100*seqResult$support), "%")
+```
+
+#### Criando o dataframe com os nodes
+
+```{r}
+nodes = unique(c(seqResult$from, seqResult$to))
+nodesData = data.frame(id = unique(nodes), title = unique(nodes), label = unique(nodes), stringsAsFactors = FALSE) %>%
+  left_join(time_pais, by = c("id"="team_long_name")) %>% 
+  rename(group = name)
+```
+
+####  Calcula as medidas de centralidade de betweeness
+####  usando o igraph, para que possamos ter tamanhos diferentes de
+####  nós no gráfico de rede
+
+```{r}
+transferGraph = graph_from_data_frame(seqResult[,c(5,6)], directed = TRUE)
+
+
+tmp = betweenness(transferGraph)
+Clubs_betweenness = data.frame(id = names(tmp), value = tmp, stringsAsFactors = FALSE)
+nodesData = nodesData %>% 
+  left_join(Clubs_betweenness) %>%
+  mutate(title = paste(id, "betweeness ", round(value))) %>%
+  arrange(id)
+```
+
+#### Criando a rede interativa
+
+#### Preparando o dataframe final e removendo duplicidades
+
+
+```{r}
+nodes = nodesData
+nodes = nodes[!duplicated(nodes$id),]
+```
+
+# Cria a rede
+
+```{r}
+
+visNetwork(nodes, edges = seqResult, width = 900, height = 700) %>%
+  visNodes(size = 10) %>%
+  visLegend() %>%
+  visEdges(smooth = FALSE) %>%
+  visOptions(highlightNearest = TRUE, nodesIdSelection = TRUE) %>%
+  visInteraction(navigationButtons = TRUE) %>%
+  visEdges(arrows = 'from') %>%
+  visPhysics(
+    solver = "barnesHut",
+    maxVelocity = 35,
+    forceAtlas2Based = list(gravitationalConstant = -6000)
+  )
+```
+
+```{r}
+# Cria a tabela final para suportar a análise
+seqResult$Ntransctions = seqResult$support*10542
+DT::datatable(
+  seqResult[,c(5,6,9,10)], 
+  rownames = FALSE,
+  options = list(
+    pageLength=25)
+)
+```
+
+#### Respondendo a pergunta   
+  
+Quais clubes mais realizam transações de compra e venda de jogadores, entre si?
+
+Podemos observar na tabela acima os 10 times com mais transaões;
+
+Links ùteis
+
+#### https://stackoverflow.com/questions/9802680/importing-files-with-extension-sqlite-into-r
+#### https://www.datascienceacademy.com.br
